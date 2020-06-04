@@ -1,0 +1,282 @@
+---
+title: "GoodReads"
+author: "Team 5"
+date: "28/05/2020"
+output:
+  html_document:
+    toc: yes
+    toc_depth: 4
+    toc_float:
+      collapsed: yes
+---
+
+
+<style>
+div.blue { background-color:#e6f0ff; border-radius: 5px; padding: 20px;}
+</style>
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r include=FALSE}
+#importing libraries and dataset
+library(readxl)
+library(sqldf)
+library(dplyr)
+library(ggplot2)
+library(corrplot)
+library(tidyr)
+library(corrgram)
+library(RColorBrewer)
+library(dplyr)
+setwd("C:/Users/Tina/Desktop/STT/Project/Data")
+books=read_excel('Cleaned_data_final_v1.xlsx')
+options(scipen = TRUE)
+books$X=NULL
+books$X.1=NULL
+books$...1=NULL
+
+```
+
+```{r}
+names(books)
+```
+
+## Subsetting 
+
+In this section, we remove observations based on the following conditions
+
+1. Books with number of pages greater than 1200
+
+2. Books with number of ratings count less than 50
+
+3. Books with author as 'Anonymours'
+
+```{r}
+books<-sqldf('select * from books where num_pages<1200 and ratings_count>50') 
+books<-sqldf('select * from books where Awards<20')
+books<-sqldf("select * from books where primary_author!='Anonymous'")
+```
+
+## Binning
+
+In this section we bin the cateforical variables based on the following conditions
+
+1. Publishers with less than 20 observations are binned as 'Others'
+
+2. Genre with less than 20 observations are binned as 'Others'
+
+3. Languages with less than 5 observation are binned as 'Others'
+
+```{r}
+dist<-sqldf('select count(bookID) as count, publisher from books  group by publisher having count>=20')
+genre<-sqldf('select count(bookID) as count, Primary_Genre from books  group by Primary_Genre having count>=20')
+lang<-sqldf('select count(bookID) as count, language_code from books group by language_code having count > 5')
+
+for (i in 1:length(books$publisher) ){
+  if(!(books$publisher[i] %in% dist$publisher)){
+    books$publisher[i]='Others'
+  }
+}
+
+
+for (i in 1:length(books$Primary_Genre) ){
+  if(!(books$Primary_Genre[i] %in% genre$Primary_Genre)){
+    books$Primary_Genre[i]='Others'
+  }
+}
+
+for (i in 1:length(books$language_code) ){
+  if(!(books$language_code[i] %in% lang$language_code)){
+    books$language_code[i]='Others'
+  }
+}
+
+```
+
+## Data Transformation
+In this section we transform the data under follwoing conditions
+
+1. Normalize the no of followers of the author
+
+2. Factorize all the categorical variables 
+
+```{r}
+normalize <- function(x){
+  return((((x-min(x))/ max(x)-min(x))) * 500)
+}
+books$normal_auth<-normalize(books$Auth_followers)
+#Converting some columns to categorical
+books$Series<-as.factor(books$Series)
+books$publisher<-as.factor(books$publisher)
+books$Primary_Genre<-as.factor(books$Primary_Genre)
+books$language_code<-as.factor(books$language_code)
+```
+
+## Exploratory Data Analysis
+```{r}
+# distribution
+ggplot(data=books)+
+  geom_freqpoly(aes(x=average_rating),color="black")+labs(title='Avergae Rating Distribution')
+
+#distribution vs Series
+ggplot(data=books)+
+  geom_freqpoly(aes(x=average_rating,color=Series),position="identity")
+
+# NO of pages
+ggplot(data=books, mapping = aes(x=average_rating,y=num_pages)) + geom_point() + geom_smooth(method="lm") + labs(title="Average Ratings Vs No Of Pages")
+
+# No of Ratings
+ggplot(data=books, mapping = aes(x=ratings_count,y=num_pages)) + geom_point() + geom_smooth(method="lm") + labs(title="Average Ratings Vs Rating Count")
+
+#Auth followers
+ggplot(data=books, mapping = aes(x=ratings_count,y=Auth_followers)) + geom_point() + geom_smooth(method="lm") + labs(title="Avergae Rating Vs Author Followers")
+
+```
+
+## Correlation Analysis
+
+```{r}
+books_numeric <- select (books,average_rating,ratings_count,text_reviews_count, Auth_followers,Auth_books)
+corrplot(corrgram(books_numeric), method="circle", type="lower", tl.col="black",tl.srt=45,col=brewer.pal(n=5, name="Set2"))
+```
+
+## Modelling
+### Full Model
+The following columns were considered for the full model
+1. Number of Pages
+2. Primary Genre
+3. Awards
+4. Series
+5. No of Author's followers 
+5. No of books for the author
+6. Language code
+7. Publisher
+
+```{r}
+books_model <- select(books,average_rating, num_pages, Primary_Genre, Awards, Series, normal_auth,Auth_books,language_code,publisher)
+books$Series<-as.factor(books$Series)
+books$Primary_Genre<-as.factor(books$Primary_Genre)
+books$publisher<-as.factor(books$publisher)
+books$language_code<-as.factor(books$language_code)
+full=lm(average_rating ~ ., data = books_model)
+summary(full)
+```
+
+### Residual Plot
+
+```{r}
+residuals <- books_model$average_rating - fitted(full)
+resids <- data.frame("Fitted" = fitted(full), "Residuals" = residuals)
+ggplot(data = resids, aes(x = Fitted, y = Residuals) )+
+  geom_point(aes(x = Fitted, y = Residuals, alpha=0.05, color='red'),size=0.8) +
+  geom_hline(aes(yintercept = 0))+ labs(title = 'Residual Plot')
+
+ggplot(data = resids, aes(sample = Residuals)) +
+  stat_qq(size=0.8) + stat_qq_line() + labs(title = 'Q-Q Plot')
+
+```
+
+## Backward Stepwise Feature selection with AIC
+```{r}
+# BACKWARD FROM FULL
+options(scipen=999)
+#AIC
+step1 <- step(lm(average_rating ~ ., data = books_model), direction = "backward", trace = 0)
+summary(step1)
+```
+### Residual Plot and Q-Q Plot
+```{r}
+residuals <- books_model$average_rating - fitted(step1)
+resids <- data.frame("Fitted" = fitted(full), "Residuals" = residuals)
+g1=ggplot(data = resids, aes(x = Fitted, y = Residuals) )+
+  geom_point(aes(x = Fitted, y = Residuals, alpha=0.05),size=0.8) +
+  geom_hline(aes(yintercept = 0)) + labs(title='RESIDUAL PLOT WITH AIC')
+n1=ggplot(data = resids, aes(sample = Residuals)) +
+  stat_qq() + stat_qq_line()+ labs(title='PROBABILITY PLOT WITH AIC')
+```
+
+## Backward Stepwise Feature selection with BIC
+```{r}
+n <- nrow(books_model)
+step2 <- step(lm(average_rating ~ ., data = books_model), direction = "backward", k = log(n), trace = 0)
+summary(step2)
+```
+### Residual Plot and Q-Q Plot
+```{r}
+residuals <- books_model$average_rating - fitted(step2)
+resids <- data.frame("Fitted" = fitted(full), "Residuals" = residuals)
+
+g2=ggplot(data = resids, aes(x = Fitted, y = Residuals) )+
+  geom_point(aes(x = Fitted, y = Residuals, alpha=0.05,color='red'), size=0.8) +
+  geom_hline(aes(yintercept = 0))  + labs(title='RESIDUAL PLOT WITH BIC')
+n2=ggplot(data = resids, aes(sample = Residuals)) +
+  stat_qq() + stat_qq_line() + labs(title='PROBABILITY PLOT WITH BIC')
+```
+## PLOTS
+```{r}
+library(gridExtra)
+grid.arrange(g1,g2,ncol=1)
+```
+
+## Forward Stepwise Feature selection with AIC
+```{r}
+biggest <- formula(lm(average_rating ~ ., data = books_model))
+step3 <- step(lm(average_rating ~ 1, data = books_model), direction = "forward", scope = biggest, trace = 0)
+summary(step3)
+```
+## Forward Stepwise Feature selection with BIC
+```{r}
+step4 <- step(lm(average_rating ~ 1, data = books_model), direction = "forward", scope = biggest, k = log(n), trace = 0)
+summary(step4)
+```
+
+## Calculating the accuracy metrics
+
+In this section we calculate the various accuracy metrics to guide us in choosing the appropriate model.
+```{r}
+myANOVA <- anova(full)
+MSE <- myANOVA$`Mean Sq`[9]
+p<-length(step1$coefficients)
+SSE_1 <- sum((step1$residuals)^2)
+Cp_1 <- SSE_1/MSE-(nrow(books_model)-2*p)
+PRESS_1 <- sum((resid(step1)/(1 - lm.influence(step1)$hat))^2)
+
+p<-length(step2$coefficients)
+SSE_2 <- sum((step2$residuals)^2)
+Cp_2 <- SSE_2/MSE-(nrow(books_model)-2*p)
+PRESS_2 <- sum((resid(step2)/(1 - lm.influence(step2)$hat))^2)
+
+p<-length(step3$coefficients)
+SSE_3 <- sum((step3$residuals)^2)
+Cp_3 <- SSE_3/MSE-(nrow(books_model)-2*p)
+PRESS_3 <- sum((resid(step3)/(1 - lm.influence(step3)$hat))^2)
+
+p<-length(step4$coefficients)
+SSE_4 <- sum((step4$residuals)^2)
+Cp_4 <- SSE_4/MSE-(nrow(books_model)-2*p)
+PRESS_4 <- sum((resid(step4)/(1 - lm.influence(step4)$hat))^2)
+
+SSE<-c(SSE_1,SSE_2,SSE_3,SSE_4)
+cp<-c(Cp_1,Cp_2,Cp_3,Cp_4)
+press<-c(PRESS_1,PRESS_2,PRESS_3,PRESS_4)
+aic<-c(AIC(step1),AIC(step2),AIC(step3),AIC(step4))
+bic<-c(BIC(step1),BIC(step2),BIC(step3),BIC(step4))
+metrics <- matrix(c(aic, bic, SSE, cp, press),ncol=5,byrow=FALSE)
+colnames(metrics) <- c("AIC","BIC","SSE","CP","PRESS")
+rownames(metrics) <- c("Backward AIC","Backward BIC","Forward AIC","Forward BIC")
+metrics<-as.table(metrics)
+metrics
+```
+
+Since, the study is more focused on interpretation of the predictor variables on the outcome variable, we choose the model with the best BIC value compromising on the R squared value.
+Thus, the model chosen is the one yielded by the stepwise with BIC. (both forward and backward methods gives us the same model)
+
+## Final Model
+```{r}
+summary(step2)
+```
+
+
